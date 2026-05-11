@@ -1,0 +1,32 @@
+// Prisma schema for System Design Canvas.
+// Single-user practice app, persisted to a local SQLite file.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Session {
+  id               String   @id @default(cuid())
+  title            String
+  question         String
+  requirementsJson String
+  sceneJson        String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model Snippet {
+  id                String   @id @default(cuid())
+  name              String
+  description       String?
+  elementsJson      String
+  thumbnailDataUrl  String?
+  tags              String   @default("")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
