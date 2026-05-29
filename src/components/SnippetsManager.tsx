@@ -1,6 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
+import { isBuiltinSnippetId } from "@/lib/builtin-snippets/definitions";
+import { isSnippetCustomized } from "@/lib/snippet-tags";
 import type { SnippetSummary } from "@/types/domain";
 
 export function SnippetsManager({ initial }: { initial: SnippetSummary[] }) {
@@ -9,14 +12,50 @@ export function SnippetsManager({ initial }: { initial: SnippetSummary[] }) {
   const [error, setError] = useState<string | null>(null);
 
   const handleDelete = async (id: string) => {
+    if (isBuiltinSnippetId(id)) {
+      setError("Built-in snippets cannot be deleted.");
+      return;
+    }
     if (!window.confirm("Delete this snippet?")) return;
     setError(null);
     try {
       const res = await fetch(`/api/snippets/${id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error("Failed to delete");
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? "Failed to delete");
+      }
       setSnippets((prev) => prev.filter((s) => s.id !== id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete");
+    }
+  };
+
+  const handleResetBuiltin = async (id: string) => {
+    if (!window.confirm("Reset this built-in snippet to the default diagram?")) return;
+    setError(null);
+    try {
+      const res = await fetch(`/api/snippets/${id}/reset`, { method: "POST" });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? "Failed to reset");
+      }
+      const json = (await res.json()) as { snippet: SnippetSummary & { createdAt: string } };
+      setSnippets((prev) =>
+        prev.map((s) =>
+          s.id === id
+            ? {
+                ...s,
+                ...json.snippet,
+                createdAt:
+                  typeof json.snippet.createdAt === "string"
+                    ? json.snippet.createdAt
+                    : s.createdAt,
+              }
+            : s,
+        ),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to reset");
     }
   };
 
@@ -78,6 +117,9 @@ export function SnippetsManager({ initial }: { initial: SnippetSummary[] }) {
               snippet={s}
               onEdit={() => setEditingId(s.id)}
               onDelete={() => handleDelete(s.id)}
+              onResetBuiltin={
+                isBuiltinSnippetId(s.id) ? () => handleResetBuiltin(s.id) : undefined
+              }
             />
           ),
         )}
@@ -90,55 +132,73 @@ function SnippetCard({
   snippet,
   onEdit,
   onDelete,
+  onResetBuiltin,
 }: {
   snippet: SnippetSummary;
   onEdit: () => void;
   onDelete: () => void;
+  onResetBuiltin?: () => void;
 }) {
+  const displayTags = snippet.tags
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => t && t !== "builtin" && t !== "customized");
+
   return (
     <li className="flex flex-col rounded-lg border border-zinc-200 bg-white p-3 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-      {snippet.thumbnailDataUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={snippet.thumbnailDataUrl}
-          alt={snippet.name}
-          className="h-32 w-full rounded bg-white object-contain"
-        />
-      ) : (
-        <div className="flex h-32 w-full items-center justify-center rounded bg-zinc-100 text-xs text-zinc-400 dark:bg-zinc-800">
-          No preview
+      <div>
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{snippet.name}</p>
+          {isBuiltinSnippetId(snippet.id) ? (
+            <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+              {isSnippetCustomized(snippet.tags) ? "Customized" : "Built-in"}
+            </span>
+          ) : null}
         </div>
-      )}
-      <div className="mt-2 flex-1">
-        <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{snippet.name}</p>
         {snippet.description ? (
           <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{snippet.description}</p>
         ) : null}
-        {snippet.tags ? (
-          <p className="mt-1 text-[11px] uppercase tracking-wide text-zinc-400">
-            {snippet.tags
-              .split(",")
-              .map((t) => t.trim())
-              .filter(Boolean)
-              .join(" · ")}
-          </p>
+        {displayTags.length > 0 ? (
+          <p className="mt-1 text-[11px] text-zinc-400">{displayTags.join(" · ")}</p>
         ) : null}
       </div>
-      <div className="mt-3 flex justify-end gap-2 text-xs">
+      <div className="mt-3 flex flex-wrap justify-end gap-2 text-xs">
+        <Link
+          href={`/snippets/${snippet.id}/edit`}
+          className="rounded border border-zinc-300 px-2 py-1 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+        >
+          Edit diagram
+        </Link>
         <button
           type="button"
           onClick={onEdit}
           className="rounded border border-zinc-300 px-2 py-1 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
         >
-          Edit
+          Edit details
         </button>
-        <button
-          type="button"
-          onClick={onDelete}
-          className="rounded border border-red-300 px-2 py-1 text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950"
-        >
-          Delete
-        </button>
+        {isBuiltinSnippetId(snippet.id) && isSnippetCustomized(snippet.tags) ? (
+          <span className="self-center text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400">
+            Customized
+          </span>
+        ) : null}
+        {onResetBuiltin ? (
+          <button
+            type="button"
+            onClick={onResetBuiltin}
+            className="rounded border border-zinc-300 px-2 py-1 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            Reset default
+          </button>
+        ) : null}
+        {!isBuiltinSnippetId(snippet.id) ? (
+          <button
+            type="button"
+            onClick={onDelete}
+            className="rounded border border-red-300 px-2 py-1 text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950"
+          >
+            Delete
+          </button>
+        ) : null}
       </div>
     </li>
   );

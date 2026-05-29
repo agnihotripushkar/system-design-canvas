@@ -29,7 +29,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ requirements });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    const status = message.includes("ANTHROPIC_API_KEY") ? 500 : 502;
+    const status = message.includes("OPENAI_API_KEY") ? 500 : 502;
     return NextResponse.json({ error: message }, { status });
   }
 }

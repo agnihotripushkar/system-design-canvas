@@ -110,6 +110,19 @@ export function placeAtAnchor<T extends ExcalidrawElementLike>(
   return offsetElements(elements, dx, dy);
 }
 
+/** Move elements so the bounding-box center sits at (centerX, centerY). */
+export function centerElementsAt<T extends ExcalidrawElementLike>(
+  elements: readonly T[],
+  centerX: number,
+  centerY: number,
+): T[] {
+  const bbox = boundingBox(elements);
+  if (!bbox) return [...elements];
+  const dx = centerX - (bbox.x + bbox.width / 2);
+  const dy = centerY - (bbox.y + bbox.height / 2);
+  return offsetElements(elements, dx, dy);
+}
+
 /** Pulls only the currently-selected elements out of a scene. */
 export function extractSelected<T extends ExcalidrawElementLike>(
   elements: readonly T[],

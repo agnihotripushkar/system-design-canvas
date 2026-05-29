@@ -11,13 +11,23 @@ datasource db {
 }
 
 model Session {
-  id               String   @id @default(cuid())
+  id               String    @id @default(cuid())
   title            String
   question         String
   requirementsJson String
   sceneJson        String
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  githubSyncedAt   DateTime?
+  githubSyncError  String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
+
+/// Local app settings (single-user install).
+model AppSettings {
+  id              String  @id @default("singleton")
+  githubRepoOwner String?
+  githubRepoName  String?
+  githubBranch    String  @default("main")
 }
 
 model Snippet {

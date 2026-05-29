@@ -1,12 +1,15 @@
 import Link from "next/link";
+import { ensureBuiltinSnippets } from "@/lib/builtin-snippets/ensure";
 import { prisma } from "@/lib/db";
 import { SnippetsManager } from "@/components/SnippetsManager";
 
 export const dynamic = "force-dynamic";
 
 export default async function SnippetsPage() {
+  await ensureBuiltinSnippets();
+
   const snippets = await prisma.snippet.findMany({
-    orderBy: { updatedAt: "desc" },
+    orderBy: { name: "asc" },
     select: {
       id: true,
       name: true,
@@ -30,9 +33,10 @@ export default async function SnippetsPage() {
             Snippet library
           </h1>
           <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-            Reusable building blocks. Edit names, add descriptions, or delete
-            snippets you no longer need. To create a snippet, select elements
-            on a practice canvas and choose &quot;Save selection as snippet&quot;.
+            Reusable building blocks. Open <strong>Edit diagram</strong> to change
+            any snippet (including built-ins), or use <strong>Use selection</strong> on
+            a practice session to override from the canvas. Built-ins can be reset
+            to defaults but not deleted.
           </p>
         </div>
         <Link

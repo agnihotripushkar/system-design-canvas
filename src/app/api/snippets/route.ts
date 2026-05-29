@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { ensureBuiltinSnippets } from "@/lib/builtin-snippets/ensure";
 import { prisma } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -13,8 +14,9 @@ const CreateSchema = z.object({
 });
 
 export async function GET() {
+  await ensureBuiltinSnippets();
+
   const snippets = await prisma.snippet.findMany({
-    orderBy: { updatedAt: "desc" },
     select: {
       id: true,
       name: true,
@@ -24,7 +26,15 @@ export async function GET() {
       createdAt: true,
     },
   });
-  return NextResponse.json({ snippets });
+
+  const sorted = [...snippets].sort((a, b) => {
+    const aBuiltin = a.tags.includes("builtin");
+    const bBuiltin = b.tags.includes("builtin");
+    if (aBuiltin !== bBuiltin) return aBuiltin ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  return NextResponse.json({ snippets: sorted });
 }
 
 export async function POST(request: Request) {

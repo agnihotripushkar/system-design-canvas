@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { scheduleSessionGithubSync } from "@/lib/github-sync-session";
 
 export const runtime = "nodejs";
 
@@ -45,8 +46,13 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     const updated = await prisma.session.update({
       where: { id },
       data: parsed.data,
-      select: { id: true, updatedAt: true },
+      select: { id: true, updatedAt: true, githubSyncedAt: true, githubSyncError: true },
     });
+
+    if (parsed.data.sceneJson !== undefined) {
+      scheduleSessionGithubSync(id);
+    }
+
     return NextResponse.json({ session: updated });
   } catch {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });

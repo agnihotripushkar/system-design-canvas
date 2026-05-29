@@ -54,6 +54,8 @@ export default async function PracticePage({ params }: PageProps) {
       question={session.question}
       requirements={requirements}
       initialScene={scene}
+      initialGithubSyncedAt={session.githubSyncedAt?.toISOString() ?? null}
+      initialGithubSyncError={session.githubSyncError}
     />
   );
 }

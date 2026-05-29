@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { prisma } from "@/lib/db";
+import { GitHubSyncPanel } from "@/components/GitHubSyncPanel";
 import { StartSessionPanel } from "@/components/StartSessionPanel";
+import { prisma } from "@/lib/db";
 import { QUESTION_BANK } from "@/lib/question-bank";
 
 export const dynamic = "force-dynamic";
@@ -26,8 +27,8 @@ export default async function HomePage() {
           </h1>
           <p className="mt-2 max-w-xl text-sm text-zinc-600 dark:text-zinc-400">
             Paste a system design question, get the requirements, and sketch your
-            answer on an Excalidraw-style canvas. Save reusable snippets to
-            speed up the next round.
+            answer on an Excalidraw-style canvas. Sign in with GitHub to save each
+            session to your repo as you solve it.
           </p>
         </div>
         <Link
@@ -38,13 +39,15 @@ export default async function HomePage() {
         </Link>
       </header>
 
+      <GitHubSyncPanel />
+
       <section>
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
           Start a new practice session
         </h2>
         <p className="mt-1 text-xs text-zinc-500">
           Pick from the curated bank or paste your own question. Either way,
-          Claude generates the requirements before you start sketching.
+          OpenAI generates the requirements before you start sketching.
         </p>
         <div className="mt-3">
           <StartSessionPanel bank={QUESTION_BANK} />

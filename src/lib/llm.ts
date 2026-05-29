@@ -1,7 +1,7 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { RequirementsSchema, type Requirements } from "@/types/domain";
 
-const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
+const DEFAULT_MODEL = "gpt-4o-mini";
 
 const SYSTEM_PROMPT = `You are an expert system-design coach helping a candidate practice solo.
 
@@ -24,7 +24,7 @@ Rules:
 - Each list item must be one sentence, action-oriented, concrete.
 - Prefer numbers in scaleEstimates ("100M DAU", "~50k QPS", "~5 PB/year", "100:1").
 - If a field genuinely does not apply, return an empty array (or null inside scaleEstimates), never omit a key.
-- Do NOT wrap the JSON in code fences or commentary. The first character of your response must be "{".`;
+- Do NOT wrap the JSON in code fences or commentary. The first character of your response must be "{"`;
 
 export type GenerateRequirementsInput = {
   question: string;
@@ -39,21 +39,14 @@ class RequirementsParseError extends Error {
   }
 }
 
-function getClient(): Anthropic {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+function getClient(): OpenAI {
+  const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "ANTHROPIC_API_KEY is not set. Add it to your .env file before calling /api/requirements.",
+      "OPENAI_API_KEY is not set. Add it to your .env file before calling /api/requirements.",
     );
   }
-  return new Anthropic({ apiKey });
-}
-
-function extractText(message: Anthropic.Messages.Message): string {
-  return message.content
-    .map((block) => (block.type === "text" ? block.text : ""))
-    .join("")
-    .trim();
+  return new OpenAI({ apiKey });
 }
 
 function tryParse(raw: string): Requirements {
@@ -86,8 +79,8 @@ function tryParse(raw: string): Requirements {
   return result.data;
 }
 
-async function callClaude(
-  client: Anthropic,
+async function callOpenAI(
+  client: OpenAI,
   question: string,
   retryFeedback?: string,
 ): Promise<string> {
@@ -95,14 +88,21 @@ async function callClaude(
     ? `Your previous response could not be parsed: ${retryFeedback}\n\nReturn ONLY valid JSON matching the schema. Question:\n\n${question}`
     : `Generate the requirements JSON for this system design question:\n\n${question}`;
 
-  const message = await client.messages.create({
-    model: process.env.ANTHROPIC_MODEL ?? DEFAULT_MODEL,
+  const completion = await client.chat.completions.create({
+    model: process.env.OPENAI_MODEL ?? DEFAULT_MODEL,
     max_tokens: 1500,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: userMessage }],
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: userMessage },
+    ],
   });
 
-  return extractText(message);
+  const text = completion.choices[0]?.message?.content?.trim();
+  if (!text) {
+    throw new Error("OpenAI returned an empty response");
+  }
+  return text;
 }
 
 export async function generateRequirements({
@@ -114,12 +114,12 @@ export async function generateRequirements({
     throw new Error("Question must not be empty");
   }
 
-  const firstRaw = await callClaude(client, trimmed);
+  const firstRaw = await callOpenAI(client, trimmed);
   try {
     return tryParse(firstRaw);
   } catch (err) {
     if (!(err instanceof RequirementsParseError)) throw err;
-    const secondRaw = await callClaude(client, trimmed, err.message);
+    const secondRaw = await callOpenAI(client, trimmed, err.message);
     return tryParse(secondRaw);
   }
 }

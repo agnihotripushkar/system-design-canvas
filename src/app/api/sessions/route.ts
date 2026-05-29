@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { syncSessionToGithubNow } from "@/lib/github-sync-session";
 import { generateRequirements, deriveTitleFromQuestion } from "@/lib/llm";
 import { DEFAULT_REQUIREMENTS } from "@/types/domain";
 
@@ -65,5 +66,13 @@ export async function POST(request: Request) {
     },
   });
 
-  return NextResponse.json({ session: { id: session.id } }, { status: 201 });
+  const github = await syncSessionToGithubNow(session.id);
+
+  return NextResponse.json(
+    {
+      session: { id: session.id },
+      github: github.skipped ? { skipped: github.skipped } : github.ok ? { ok: true } : { error: github.error },
+    },
+    { status: 201 },
+  );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useRef, type DragEvent } from "react";
+import { memo, useCallback, useEffect, useRef, type DragEvent } from "react";
 import "@excalidraw/excalidraw/index.css";
 import type {
   AppState,
@@ -46,7 +46,7 @@ export type ExcalidrawCanvasProps = {
   onCanvasDrop?: (payload: CanvasDropPayload) => void;
 };
 
-export function ExcalidrawCanvas({
+export const ExcalidrawCanvas = memo(function ExcalidrawCanvas({
   initialData,
   onApi,
   onSceneChange,
@@ -140,4 +140,4 @@ export function ExcalidrawCanvas({
       />
     </div>
   );
-}
+});

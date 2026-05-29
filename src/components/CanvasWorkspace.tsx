@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import { ExcalidrawCanvas, type SceneSnapshot } from "@/components/ExcalidrawCanvas";
 import { QuestionPanel } from "@/components/QuestionPanel";
 import { SnippetsPanel } from "@/components/SnippetsPanel";
 import { extractSelected, placeAtAnchor, regenerateIds } from "@/lib/excalidraw-utils";
+import { normalizeExcalidrawElements } from "@/lib/normalize-excalidraw-elements";
 import type {
   ExcalidrawElementLike,
   Requirements,
@@ -15,12 +16,19 @@ import type {
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 
+const LEFT_PANEL_WIDTH = 320;
+const RIGHT_PANEL_WIDTH = 300;
+
+type GithubSyncState = "idle" | "pending" | "synced" | "error";
+
 export type CanvasWorkspaceProps = {
   sessionId: string;
   title: string;
   question: string;
   requirements: Requirements;
   initialScene: { elements: ExcalidrawElementLike[]; appState: Record<string, unknown>; files: Record<string, unknown> };
+  initialGithubSyncedAt?: string | null;
+  initialGithubSyncError?: string | null;
 };
 
 export function CanvasWorkspace({
@@ -29,6 +37,8 @@ export function CanvasWorkspace({
   question,
   requirements,
   initialScene,
+  initialGithubSyncedAt,
+  initialGithubSyncError,
 }: CanvasWorkspaceProps) {
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const [snippets, setSnippets] = useState<SnippetSummary[]>([]);
@@ -36,6 +46,16 @@ export function CanvasWorkspace({
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [toast, setToast] = useState<string | null>(null);
   const [snippetsRefreshTick, setSnippetsRefreshTick] = useState(0);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(true);
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [githubSync, setGithubSync] = useState<GithubSyncState>(() => {
+    if (initialGithubSyncError) return "error";
+    if (initialGithubSyncedAt) return "synced";
+    return "idle";
+  });
+  const [githubSyncError, setGithubSyncError] = useState<string | null>(
+    initialGithubSyncError ?? null,
+  );
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -46,11 +66,15 @@ export function CanvasWorkspace({
     setSnippetsRefreshTick((n) => n + 1);
   }, []);
 
+  const snippetsRef = useRef(snippets);
+  snippetsRef.current = snippets;
+
   useEffect(() => {
     let cancelled = false;
+    const showLoading = snippetsRef.current.length === 0;
     (async () => {
       if (cancelled) return;
-      setSnippetsLoading(true);
+      if (showLoading) setSnippetsLoading(true);
       try {
         const res = await fetch("/api/snippets", { cache: "no-store" });
         if (!res.ok) throw new Error("Failed to load snippets");
@@ -69,9 +93,43 @@ export function CanvasWorkspace({
     };
   }, [snippetsRefreshTick, showToast]);
 
+  const pollGithubSync = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}`, { cache: "no-store" });
+      if (!res.ok) return;
+      const json = (await res.json()) as {
+        session?: { githubSyncedAt?: string | null; githubSyncError?: string | null };
+      };
+      const s = json.session;
+      if (!s) return;
+      if (s.githubSyncError) {
+        setGithubSync("error");
+        setGithubSyncError(s.githubSyncError);
+        return;
+      }
+      if (s.githubSyncedAt) {
+        setGithubSync("synced");
+        setGithubSyncError(null);
+      }
+    } catch {
+      // ignore poll errors
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (githubSync !== "pending") return;
+    const interval = setInterval(() => void pollGithubSync(), 4000);
+    const stop = setTimeout(() => clearInterval(interval), 45_000);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(stop);
+    };
+  }, [githubSync, pollGithubSync]);
+
   const handleSceneChange = useCallback(
     async (snapshot: SceneSnapshot) => {
-      setSaveStatus("saving");
+      setSaveStatus((prev) => (prev === "error" ? "error" : "saving"));
+      setGithubSync((prev) => (prev === "error" ? "error" : "pending"));
       try {
         const sceneJson = JSON.stringify({
           elements: snapshot.elements,
@@ -85,21 +143,24 @@ export function CanvasWorkspace({
         });
         if (!res.ok) throw new Error(`Save failed (${res.status})`);
         setSaveStatus("saved");
+        void pollGithubSync();
       } catch (err) {
         setSaveStatus("error");
         showToast(err instanceof Error ? err.message : "Failed to save");
       }
     },
-    [sessionId, showToast],
+    [sessionId, showToast, pollGithubSync],
   );
+
+  const handleApi = useCallback((api: ExcalidrawImperativeAPI) => {
+    apiRef.current = api;
+  }, []);
 
   const handleSaveSelectionAsSnippet = useCallback(async () => {
     const api = apiRef.current;
     if (!api) return;
     const elements = api.getSceneElements() as unknown as ExcalidrawElementLike[];
-    const appState = api.getAppState();
-    const files = api.getFiles();
-    const selectedIds = appState.selectedElementIds ?? {};
+    const selectedIds = api.getAppState().selectedElementIds ?? {};
     const selected = extractSelected(elements, selectedIds as Record<string, true>);
     if (selected.length === 0) {
       showToast("Select something on the canvas first.");
@@ -109,24 +170,6 @@ export function CanvasWorkspace({
     const name = window.prompt("Snippet name?");
     if (!name || !name.trim()) return;
 
-    let thumbnailDataUrl: string | null = null;
-    try {
-      const { exportToCanvas } = await import("@excalidraw/excalidraw");
-      const canvas = await exportToCanvas(
-        selected as never,
-        appState,
-        files,
-        {
-          exportBackground: true,
-          viewBackgroundColor: "#ffffff",
-          exportPadding: 16,
-        },
-      );
-      thumbnailDataUrl = downscaleDataUrl(canvas, 320, 200);
-    } catch {
-      // Thumbnail is optional - continue without it.
-    }
-
     try {
       const res = await fetch("/api/snippets", {
         method: "POST",
@@ -134,7 +177,6 @@ export function CanvasWorkspace({
         body: JSON.stringify({
           name: name.trim(),
           elementsJson: JSON.stringify(selected),
-          thumbnailDataUrl,
         }),
       });
       if (!res.ok) {
@@ -148,12 +190,57 @@ export function CanvasWorkspace({
     }
   }, [refreshSnippets, showToast]);
 
+  const handleOverrideSnippet = useCallback(
+    async (snippetId: string) => {
+      const api = apiRef.current;
+      if (!api) return;
+      const elements = api.getSceneElements() as unknown as ExcalidrawElementLike[];
+      const selectedIds = api.getAppState().selectedElementIds ?? {};
+      const selected = extractSelected(elements, selectedIds as Record<string, true>);
+      if (selected.length === 0) {
+        showToast("Select elements on the canvas to use as the new diagram.");
+        return;
+      }
+
+      const snippet = snippets.find((s) => s.id === snippetId);
+      if (
+        !window.confirm(
+          `Replace "${snippet?.name ?? "snippet"}" with the current selection? This updates the snippet everywhere.`,
+        )
+      ) {
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/snippets/${snippetId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            elementsJson: JSON.stringify(selected),
+          }),
+        });
+        if (!res.ok) {
+          const j = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(j.error ?? "Failed to update snippet");
+        }
+        showToast(`Updated "${snippet?.name ?? "snippet"}"`);
+        refreshSnippets();
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : "Failed to update snippet");
+      }
+    },
+    [refreshSnippets, showToast, snippets],
+  );
+
   const handleDeleteSnippet = useCallback(
     async (id: string) => {
       if (!window.confirm("Delete this snippet?")) return;
       try {
         const res = await fetch(`/api/snippets/${id}`, { method: "DELETE" });
-        if (!res.ok) throw new Error("Failed to delete");
+        if (!res.ok) {
+          const j = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(j.error ?? "Failed to delete");
+        }
         setSnippets((prev) => prev.filter((s) => s.id !== id));
       } catch (err) {
         showToast(err instanceof Error ? err.message : "Failed to delete snippet");
@@ -185,9 +272,10 @@ export function CanvasWorkspace({
         };
         const raw = JSON.parse(snippet.elementsJson) as ExcalidrawElementLike[];
         const positioned = placeAtAnchor(regenerateIds(raw), sceneX, sceneY);
+        const normalized = await normalizeExcalidrawElements(positioned);
         const current = api.getSceneElements() as unknown as ExcalidrawElementLike[];
         api.updateScene({
-          elements: [...current, ...positioned] as never,
+          elements: [...current, ...normalized] as never,
         });
         showToast(`Inserted "${snippet.name}"`);
       } catch (err) {
@@ -213,44 +301,83 @@ export function CanvasWorkspace({
           >
             Snippets
           </Link>
+          <div className="ml-1 hidden h-4 w-px bg-zinc-200 dark:bg-zinc-700 sm:block" />
+          <PanelHeaderToggle
+            label="Requirements"
+            open={leftPanelOpen}
+            onClick={() => setLeftPanelOpen((o) => !o)}
+          />
+          <PanelHeaderToggle
+            label="Snippets"
+            open={rightPanelOpen}
+            onClick={() => setRightPanelOpen((o) => !o)}
+          />
         </div>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={handleSaveSelectionAsSnippet}
-            className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
-          >
-            Save selection as snippet
-          </button>
-          <SaveIndicator status={saveStatus} />
-        </div>
+        <WorkspaceHeaderActions
+          saveStatus={saveStatus}
+          githubSync={githubSync}
+          githubSyncError={githubSyncError}
+          onSaveSelectionAsSnippet={handleSaveSelectionAsSnippet}
+        />
       </header>
-      <main className="grid min-h-0 grid-cols-[320px_1fr_300px]">
-        <div className="min-h-0 border-r border-zinc-200 dark:border-zinc-800">
-          <QuestionPanel title={title} question={question} requirements={requirements} />
-        </div>
-        <div className="min-h-0 bg-white">
+      <main
+        className="grid min-h-0 transition-[grid-template-columns] duration-200 ease-out"
+        style={{
+          gridTemplateColumns: `${leftPanelOpen ? LEFT_PANEL_WIDTH : 0}px minmax(0, 1fr) ${rightPanelOpen ? RIGHT_PANEL_WIDTH : 0}px`,
+        }}
+      >
+        <CollapsibleSidePanel
+          side="left"
+          open={leftPanelOpen}
+          width={LEFT_PANEL_WIDTH}
+        >
+          <QuestionPanel
+            title={title}
+            question={question}
+            requirements={requirements}
+            onClose={() => setLeftPanelOpen(false)}
+          />
+        </CollapsibleSidePanel>
+        <div className="relative min-h-0 bg-white">
+          {!leftPanelOpen ? (
+            <PanelEdgeTab
+              side="left"
+              label="Requirements"
+              onClick={() => setLeftPanelOpen(true)}
+            />
+          ) : null}
+          {!rightPanelOpen ? (
+            <PanelEdgeTab
+              side="right"
+              label="Snippets"
+              onClick={() => setRightPanelOpen(true)}
+            />
+          ) : null}
           <ExcalidrawCanvas
             initialData={{
               elements: initialScene.elements as never,
               appState: initialScene.appState as never,
               files: initialScene.files as never,
             }}
-            onApi={(api) => {
-              apiRef.current = api;
-            }}
+            onApi={handleApi}
             onSceneChange={handleSceneChange}
             onCanvasDrop={handleCanvasDrop}
           />
         </div>
-        <div className="min-h-0 border-l border-zinc-200 dark:border-zinc-800">
+        <CollapsibleSidePanel
+          side="right"
+          open={rightPanelOpen}
+          width={RIGHT_PANEL_WIDTH}
+        >
           <SnippetsPanel
             snippets={snippets}
             loading={snippetsLoading}
             onRefresh={refreshSnippets}
             onDelete={handleDeleteSnippet}
+            onApplyFromCanvas={handleOverrideSnippet}
+            onClose={() => setRightPanelOpen(false)}
           />
-        </div>
+        </CollapsibleSidePanel>
       </main>
       {toast ? (
         <div className="pointer-events-none fixed bottom-6 left-1/2 -translate-x-1/2 rounded-lg bg-zinc-900 px-4 py-2 text-sm text-white shadow-lg dark:bg-zinc-100 dark:text-zinc-900">
@@ -261,10 +388,145 @@ export function CanvasWorkspace({
   );
 }
 
+function CollapsibleSidePanel({
+  side,
+  open,
+  width,
+  children,
+}: {
+  side: "left" | "right";
+  open: boolean;
+  width: number;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className={`min-h-0 overflow-hidden ${
+        side === "left"
+          ? "border-r border-zinc-200 dark:border-zinc-800"
+          : "border-l border-zinc-200 dark:border-zinc-800"
+      }`}
+      style={{ width: open ? width : 0 }}
+      aria-hidden={!open}
+    >
+      <div className="h-full" style={{ width }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function PanelHeaderToggle({
+  label,
+  open,
+  onClick,
+}: {
+  label: string;
+  open: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={open}
+      className={`hidden rounded-md px-2 py-1 text-xs font-medium transition sm:inline-block ${
+        open
+          ? "bg-zinc-200 text-zinc-900 dark:bg-zinc-700 dark:text-zinc-100"
+          : "text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function PanelEdgeTab({
+  side,
+  label,
+  onClick,
+}: {
+  side: "left" | "right";
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`absolute top-1/2 z-20 flex -translate-y-1/2 flex-col items-center gap-0.5 border border-zinc-200 bg-white px-1.5 py-2.5 text-[10px] font-medium leading-tight text-zinc-700 shadow-md hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800 ${
+        side === "left" ? "left-0 rounded-r-md border-l-0" : "right-0 rounded-l-md border-r-0"
+      }`}
+      aria-label={`Open ${label} panel`}
+      title={`Open ${label}`}
+    >
+      <span className="text-sm text-zinc-400">{side === "left" ? "›" : "‹"}</span>
+      <span className="max-w-[3rem] text-center">{label}</span>
+    </button>
+  );
+}
+
+const WorkspaceHeaderActions = memo(function WorkspaceHeaderActions({
+  saveStatus,
+  githubSync,
+  githubSyncError,
+  onSaveSelectionAsSnippet,
+}: {
+  saveStatus: SaveStatus;
+  githubSync: GithubSyncState;
+  githubSyncError: string | null;
+  onSaveSelectionAsSnippet: () => void;
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-3">
+      <button
+        type="button"
+        onClick={onSaveSelectionAsSnippet}
+        className="shrink-0 rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+      >
+        Save selection as snippet
+      </button>
+      <GithubSyncIndicator status={githubSync} error={githubSyncError} />
+      <SaveIndicator status={saveStatus} />
+    </div>
+  );
+});
+
+function GithubSyncIndicator({
+  status,
+  error,
+}: {
+  status: GithubSyncState;
+  error: string | null;
+}) {
+  if (status === "idle") return null;
+  const label =
+    status === "pending"
+      ? "GitHub…"
+      : status === "synced"
+        ? "On GitHub"
+        : "GitHub failed";
+  const cls =
+    status === "error"
+      ? "text-red-500"
+      : status === "pending"
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-green-600 dark:text-green-400";
+  return (
+    <span
+      className={`inline-block w-[5.5rem] shrink-0 text-right text-xs tabular-nums ${cls}`}
+      title={error ?? undefined}
+      aria-live="polite"
+    >
+      {label}
+    </span>
+  );
+}
+
 function SaveIndicator({ status }: { status: SaveStatus }) {
   const label =
     status === "saving"
-      ? "Saving..."
+      ? "Saving…"
       : status === "saved"
         ? "Saved"
         : status === "error"
@@ -276,7 +538,16 @@ function SaveIndicator({ status }: { status: SaveStatus }) {
       : status === "saving"
         ? "text-amber-600 dark:text-amber-400"
         : "text-zinc-500";
-  return <span className={`text-xs ${cls}`}>{label}</span>;
+  // Fixed width so label changes don't shift the snippet button (layout flicker).
+  return (
+    <span
+      className={`inline-block w-[5.5rem] shrink-0 text-right text-xs tabular-nums ${cls}`}
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      {label}
+    </span>
+  );
 }
 
 /** Strip out fields we don't want persisted (e.g., transient UI state). */
@@ -296,14 +567,3 @@ function stripVolatileAppState(appState: Record<string, unknown>): Record<string
   return out;
 }
 
-function downscaleDataUrl(canvas: HTMLCanvasElement, maxW: number, maxH: number): string {
-  const ratio = Math.min(maxW / canvas.width, maxH / canvas.height, 1);
-  if (ratio >= 1) return canvas.toDataURL("image/png");
-  const target = document.createElement("canvas");
-  target.width = Math.max(1, Math.round(canvas.width * ratio));
-  target.height = Math.max(1, Math.round(canvas.height * ratio));
-  const ctx = target.getContext("2d");
-  if (!ctx) return canvas.toDataURL("image/png");
-  ctx.drawImage(canvas, 0, 0, target.width, target.height);
-  return target.toDataURL("image/png");
-}

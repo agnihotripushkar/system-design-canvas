@@ -19,17 +19,31 @@ export type QuestionPanelProps = {
   title: string;
   question: string;
   requirements: Requirements;
+  onClose?: () => void;
 };
 
-export function QuestionPanel({ title, question, requirements }: QuestionPanelProps) {
+export function QuestionPanel({ title, question, requirements, onClose }: QuestionPanelProps) {
   const [tab, setTab] = useState<Tab>("functional");
 
   return (
     <aside className="flex h-full w-full flex-col overflow-hidden bg-zinc-50 dark:bg-zinc-950">
       <header className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-        <h2 className="line-clamp-2 text-base font-semibold text-zinc-900 dark:text-zinc-100">
-          {title}
-        </h2>
+        <div className="flex items-start justify-between gap-2">
+          <h2 className="line-clamp-2 min-w-0 flex-1 text-base font-semibold text-zinc-900 dark:text-zinc-100">
+            {title}
+          </h2>
+          {onClose ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className="shrink-0 rounded p-1 text-zinc-400 hover:bg-zinc-200 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+              aria-label="Close requirements panel"
+              title="Close panel"
+            >
+              ×
+            </button>
+          ) : null}
+        </div>
         <details className="group mt-2 text-xs text-zinc-600 dark:text-zinc-400">
           <summary className="cursor-pointer select-none text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300">
             Show full question
