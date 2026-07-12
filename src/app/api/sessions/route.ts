@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { syncSessionToGithubNow } from "@/lib/github-sync-session";
 import { generateRequirements, deriveTitleFromQuestion } from "@/lib/llm";
+import { checkRateLimit, clientKeyFromRequest } from "@/lib/rate-limit";
 import { DEFAULT_REQUIREMENTS } from "@/types/domain";
 
 export const runtime = "nodejs";
@@ -11,6 +12,10 @@ const CreateSchema = z.object({
   question: z.string().min(3),
   generateRequirements: z.boolean().optional().default(true),
 });
+
+// Shares its budget with /api/requirements (same "llm:" key prefix) since
+// both endpoints can trigger OpenAI calls for the same client.
+const RATE_LIMIT = { limit: 10, windowMs: 60_000 };
 
 export async function GET() {
   const sessions = await prisma.session.findMany({
@@ -46,6 +51,13 @@ export async function POST(request: Request) {
 
   let requirements = DEFAULT_REQUIREMENTS;
   if (parsed.data.generateRequirements) {
+    const rateLimit = checkRateLimit(`llm:${clientKeyFromRequest(request)}`, RATE_LIMIT);
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        { error: "Too many requests. Please wait before trying again." },
+        { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+      );
+    }
     try {
       requirements = await generateRequirements({ question });
     } catch (err) {

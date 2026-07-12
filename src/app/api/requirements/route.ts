@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { generateRequirements } from "@/lib/llm";
+import { checkRateLimit, clientKeyFromRequest } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -8,7 +9,19 @@ const RequestSchema = z.object({
   question: z.string().min(3, "Question must be at least 3 characters"),
 });
 
+// Each request can trigger up to two OpenAI calls (see generateRequirements'
+// retry-on-invalid-JSON path), so keep this conservative.
+const RATE_LIMIT = { limit: 10, windowMs: 60_000 };
+
 export async function POST(request: Request) {
+  const rateLimit = checkRateLimit(`llm:${clientKeyFromRequest(request)}`, RATE_LIMIT);
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      { error: "Too many requests. Please wait before trying again." },
+      { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+    );
+  }
+
   let body: unknown;
   try {
     body = await request.json();
