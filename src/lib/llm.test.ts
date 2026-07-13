@@ -1,22 +1,26 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { deriveTitleFromQuestion } from "./llm";
 
-const createMock = vi.fn();
+const parseMock = vi.fn();
 
 vi.mock("openai", () => {
   return {
     default: class {
       chat = {
         completions: {
-          create: createMock,
+          parse: parseMock,
         },
       };
     },
   };
 });
 
-function completionWith(content: string) {
-  return { choices: [{ message: { content } }] };
+vi.mock("openai/helpers/zod", () => ({
+  zodResponseFormat: () => ({ type: "json_schema" }),
+}));
+
+function completionWith(parsed: unknown, refusal: string | null = null) {
+  return { choices: [{ message: { parsed, refusal } }] };
 }
 
 describe("deriveTitleFromQuestion", () => {
@@ -52,48 +56,57 @@ describe("generateRequirements", () => {
     assumptions: [],
     scaleEstimates: { dau: null, qps: null, storagePerYear: null, readWriteRatio: null },
   };
+  // Matches the wire schema shape but violates the app-level RequirementsSchema
+  // (functional/nonFunctional must be non-empty) to exercise the retry path.
+  const invalidPayload = {
+    functional: [],
+    nonFunctional: [],
+    constraints: [],
+    assumptions: [],
+    scaleEstimates: { dau: null, qps: null, storagePerYear: null, readWriteRatio: null },
+  };
 
   beforeEach(() => {
-    createMock.mockReset();
+    parseMock.mockReset();
     process.env.OPENAI_API_KEY = "test-key";
   });
 
-  it("parses a valid JSON response from the model", async () => {
-    createMock.mockResolvedValueOnce(completionWith(JSON.stringify(validPayload)));
+  it("returns the parsed response from the model", async () => {
+    parseMock.mockResolvedValueOnce(completionWith(validPayload));
     const { generateRequirements } = await import("./llm");
     const result = await generateRequirements({ question: "Design a URL shortener" });
     expect(result).toEqual(validPayload);
-    expect(createMock).toHaveBeenCalledTimes(1);
+    expect(parseMock).toHaveBeenCalledTimes(1);
   });
 
-  it("strips markdown code fences before parsing", async () => {
-    createMock.mockResolvedValueOnce(
-      completionWith("```json\n" + JSON.stringify(validPayload) + "\n```"),
-    );
+  it("retries once when the first response fails app-level validation, then succeeds", async () => {
+    parseMock
+      .mockResolvedValueOnce(completionWith(invalidPayload))
+      .mockResolvedValueOnce(completionWith(validPayload));
     const { generateRequirements } = await import("./llm");
     const result = await generateRequirements({ question: "Design a URL shortener" });
     expect(result).toEqual(validPayload);
+    expect(parseMock).toHaveBeenCalledTimes(2);
   });
 
-  it("retries once when the first response fails schema validation, then succeeds", async () => {
-    createMock
-      .mockResolvedValueOnce(completionWith("not json at all"))
-      .mockResolvedValueOnce(completionWith(JSON.stringify(validPayload)));
-    const { generateRequirements } = await import("./llm");
-    const result = await generateRequirements({ question: "Design a URL shortener" });
-    expect(result).toEqual(validPayload);
-    expect(createMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("throws if both attempts fail to produce valid JSON", async () => {
-    createMock
-      .mockResolvedValueOnce(completionWith("nope"))
-      .mockResolvedValueOnce(completionWith("still nope"));
+  it("throws if both attempts fail app-level validation", async () => {
+    parseMock
+      .mockResolvedValueOnce(completionWith(invalidPayload))
+      .mockResolvedValueOnce(completionWith(invalidPayload));
     const { generateRequirements } = await import("./llm");
     await expect(
       generateRequirements({ question: "Design a URL shortener" }),
     ).rejects.toThrow();
-    expect(createMock).toHaveBeenCalledTimes(2);
+    expect(parseMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws immediately (no retry) when the model refuses", async () => {
+    parseMock.mockResolvedValueOnce(completionWith(null, "unsafe content"));
+    const { generateRequirements } = await import("./llm");
+    await expect(
+      generateRequirements({ question: "Design a URL shortener" }),
+    ).rejects.toThrow(/refused/);
+    expect(parseMock).toHaveBeenCalledTimes(1);
   });
 
   it("throws when OPENAI_API_KEY is not set", async () => {
