@@ -33,7 +33,7 @@ describe("RequirementsSchema", () => {
   });
 
   it("rejects a missing top-level key", () => {
-    const { constraints, ...rest } = base;
+    const { constraints: _constraints, ...rest } = base;
     const result = RequirementsSchema.safeParse(rest);
     expect(result.success).toBe(false);
   });
